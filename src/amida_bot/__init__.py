@@ -6,9 +6,17 @@ from concurrent.futures import ThreadPoolExecutor
 from amida_bot.application.amidakuji_service import AmidakujiService
 from amida_bot.config import load_settings
 from amida_bot.discord_ui.bot import AmidaBot
+from amida_bot.healthcheck import (
+    SERVICE_NAME,
+    HealthCheckServer,
+    HealthState,
+    resolve_service_version,
+)
 from amida_bot.infra.supabase_client import create_supabase_client
 from amida_bot.persistence.guild_template_repository import GuildTemplateRepository
 from amida_bot.persistence.last_used_template_repository import LastUsedTemplateRepository
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -27,8 +35,35 @@ def main() -> None:
         thread_name_prefix="amida-db",
     )
     service = AmidakujiService(guild_repo, last_used_repo, db_executor=db_executor)
+    health_state = HealthState(service=SERVICE_NAME, version=resolve_service_version())
+    healthcheck_server: HealthCheckServer | None = None
 
-    bot = AmidaBot(service=service, development_guild_id=settings.development_guild_id)
-    # Use app-configured root logger for both app and discord.py logs.
-    # This prevents duplicate handlers while keeping discord.py logs visible.
-    bot.run(settings.discord_token, log_handler=None)
+    if settings.healthcheck_enabled:
+        healthcheck_server = HealthCheckServer(
+            host=settings.healthcheck_host,
+            port=settings.healthcheck_port,
+            path=settings.healthcheck_path,
+            state=health_state,
+        )
+        healthcheck_server.start()
+        logger.info(
+            "Healthcheck endpoint listening on http://%s:%s%s",
+            settings.healthcheck_host,
+            healthcheck_server.port,
+            settings.healthcheck_path,
+        )
+
+    bot = AmidaBot(
+        service=service,
+        development_guild_id=settings.development_guild_id,
+        health_state=health_state,
+    )
+    try:
+        # Use app-configured root logger for both app and discord.py logs.
+        # This prevents duplicate handlers while keeping discord.py logs visible.
+        bot.run(settings.discord_token, log_handler=None)
+    finally:
+        health_state.mark_closing()
+        service.shutdown()
+        if healthcheck_server is not None:
+            healthcheck_server.shutdown()

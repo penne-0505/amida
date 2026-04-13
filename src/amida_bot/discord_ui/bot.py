@@ -7,17 +7,24 @@ from discord.ext import commands
 
 from amida_bot.application.amidakuji_service import AmidakujiService
 from amida_bot.discord_ui.amidakuji_flow import register_amidakuji_command
+from amida_bot.healthcheck import HealthState
 
 logger = logging.getLogger(__name__)
 
 
 class AmidaBot(commands.Bot):
-    def __init__(self, service: AmidakujiService, development_guild_id: int | None) -> None:
+    def __init__(
+        self,
+        service: AmidakujiService,
+        development_guild_id: int | None,
+        health_state: HealthState | None = None,
+    ) -> None:
         intents = discord.Intents.default()
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
         self.service = service
         self.development_guild_id = development_guild_id
+        self.health_state = health_state
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type is discord.InteractionType.application_command:
@@ -47,7 +54,24 @@ class AmidaBot(commands.Bot):
         await self.tree.sync()
         logger.info("Global slash commands synced.")
 
+    async def on_ready(self) -> None:
+        if self.health_state is not None:
+            self.health_state.mark_ready()
+        logger.info("Discord gateway is ready.")
+
+    async def on_resumed(self) -> None:
+        if self.health_state is not None:
+            self.health_state.mark_ready()
+        logger.info("Discord gateway resumed.")
+
+    async def on_disconnect(self) -> None:
+        if self.health_state is not None:
+            self.health_state.mark_gateway_disconnected()
+        logger.warning("Discord gateway disconnected.")
+
     async def close(self) -> None:
+        if self.health_state is not None:
+            self.health_state.mark_closing()
         self.service.shutdown()
         await super().close()
 

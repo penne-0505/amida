@@ -8,9 +8,15 @@ from postgrest.exceptions import APIError
 from supabase import Client
 
 from amida_bot.domain.models import GuildTemplate
-from amida_bot.errors import DuplicateTemplateTitleError, SaveFailedError, TemplateNotFoundError
+from amida_bot.errors import (
+    DeleteFailedError,
+    DuplicateTemplateTitleError,
+    SaveFailedError,
+    TemplateNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
+_TEMPLATE_COLUMNS = "template_id,guild_id,title,options,created_by,created_at,updated_at"
 
 
 @dataclass(frozen=True)
@@ -27,7 +33,7 @@ class GuildTemplateRepository:
         fetch_size = limit + 1
         response = (
             self._client.table("guild_templates")
-            .select("template_id,guild_id,title,options,created_by,created_at,updated_at")
+            .select(_TEMPLATE_COLUMNS)
             .eq("guild_id", guild_id)
             .order("updated_at", desc=True)
             .range(offset, offset + fetch_size - 1)
@@ -43,9 +49,22 @@ class GuildTemplateRepository:
     def get_by_title(self, guild_id: str, title: str) -> GuildTemplate:
         response = (
             self._client.table("guild_templates")
-            .select("template_id,guild_id,title,options,created_by,created_at,updated_at")
+            .select(_TEMPLATE_COLUMNS)
             .eq("guild_id", guild_id)
             .eq("title_normalized", _normalize_title(title))
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            raise TemplateNotFoundError("テンプレートが存在しません。")
+        return _to_model(response.data[0])
+
+    def get_by_id(self, guild_id: str, template_id: str) -> GuildTemplate:
+        response = (
+            self._client.table("guild_templates")
+            .select(_TEMPLATE_COLUMNS)
+            .eq("guild_id", guild_id)
+            .eq("template_id", template_id)
             .limit(1)
             .execute()
         )
@@ -76,6 +95,45 @@ class GuildTemplateRepository:
         if not response.data:
             raise SaveFailedError("テンプレート保存に失敗しました。")
         return _to_model(response.data[0])
+
+    def update(self, template_id: str, guild_id: str, title: str, options: list[str]) -> GuildTemplate:
+        self.get_by_id(guild_id, template_id)
+        payload = {
+            "title": title,
+            "options": options,
+        }
+        try:
+            (
+                self._client.table("guild_templates")
+                .update(payload)
+                .eq("template_id", template_id)
+                .eq("guild_id", guild_id)
+                .execute()
+            )
+        except APIError as error:
+            message = str(error).lower()
+            if "duplicate key" in message or "unique" in message:
+                raise DuplicateTemplateTitleError("同名テンプレートが既に存在します。") from error
+            logger.exception("guild_templates update failed: %s", error)
+            raise SaveFailedError("テンプレート更新に失敗しました。") from error
+
+        return self.get_by_id(guild_id, template_id)
+
+    def delete(self, template_id: str, guild_id: str) -> GuildTemplate:
+        existing = self.get_by_id(guild_id, template_id)
+        try:
+            (
+                self._client.table("guild_templates")
+                .delete()
+                .eq("template_id", template_id)
+                .eq("guild_id", guild_id)
+                .execute()
+            )
+        except APIError as error:
+            logger.exception("guild_templates delete failed: %s", error)
+            raise DeleteFailedError("テンプレート削除に失敗しました。") from error
+
+        return existing
 
 
 def _to_model(row: dict[str, Any]) -> GuildTemplate:

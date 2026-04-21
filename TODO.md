@@ -1,7 +1,7 @@
 # Project Task Management Rules
 
 ## 0. System Metadata
-- **Current Max ID**: `Next ID No: 4` (※タスク追加時にインクリメント必須)
+- **Current Max ID**: `Next ID No: 5` (※タスク追加時にインクリメント必須)
 - **ID Source of Truth**: このファイルの `Next ID No` 行が、全プロジェクトにおける唯一のID発番元である。
 
 ## 1. Task Lifecycle (State Machine)
@@ -237,6 +237,21 @@ ID生成およびタイトルのプレフィックスには以下のみを使用
 ---
 
 ## Ready
+
+- **Title**: [Feat] Add template edit and delete management flow
+- **ID**: Core-Feat-4
+- **Priority**: P1
+- **Size**: M
+- **Area**: Core
+- **Dependencies**: []
+- **Goal**: `/amidakuji` から既存テンプレートの編集と削除が行え、権限・確認・エラーハンドリングが定義どおりに動作している。
+- **Steps**:
+  1. [ ] Plan の "Scope" と "Requirements" に従い、編集・削除導線と権限制御を実装
+  2. [ ] Plan の "Requirements" に従い、テンプレート更新・削除の Application / Persistence API を追加
+  3. [ ] Plan の "Test Plan" に従い、主要な正常系・異常系をテストでカバー
+  4. [ ] 関連する guide / reference / README を必要に応じて更新し、利用者向け挙動を反映
+- **Description**: 既存テンプレート利用フローを拡張し、テンプレートの編集と削除を `/amidakuji` 内で完結できるようにする。
+- **Plan**: `_docs/plan/Core/template-edit-delete-management.md`
 
 ---
 

@@ -13,7 +13,7 @@ from amida_bot.domain.models import (
     TemplateSnapshot,
 )
 from amida_bot.domain.raffle import draw_assignments, sanitize_options
-from amida_bot.errors import DrawFailedError, SaveFailedError
+from amida_bot.errors import DeleteFailedError, DrawFailedError, SaveFailedError
 from amida_bot.persistence.guild_template_repository import GuildTemplatePage, GuildTemplateRepository
 from amida_bot.persistence.last_used_template_repository import LastUsedTemplateRepository
 
@@ -56,12 +56,7 @@ class AmidakujiService:
         title: str,
         options: list[str],
     ) -> GuildTemplate:
-        normalized_title = title.strip()
-        normalized_options = sanitize_options(options)
-        if not normalized_title:
-            raise SaveFailedError("テンプレート名は必須です。")
-        if not normalized_options:
-            raise SaveFailedError("選択肢は1件以上必要です。")
+        normalized_title, normalized_options = _validate_template_payload(title, options)
         return await self._run_db(
             self._guild_templates.create,
             guild_id,
@@ -69,6 +64,31 @@ class AmidakujiService:
             normalized_options,
             user_id,
         )
+
+    async def get_template(self, guild_id: str, template_id: str) -> GuildTemplate:
+        return await self._run_db(self._guild_templates.get_by_id, guild_id, template_id)
+
+    async def update_template(
+        self,
+        guild_id: str,
+        template_id: str,
+        title: str,
+        options: list[str],
+    ) -> GuildTemplate:
+        normalized_title, normalized_options = _validate_template_payload(title, options)
+        return await self._run_db(
+            self._guild_templates.update,
+            template_id,
+            guild_id,
+            normalized_title,
+            normalized_options,
+        )
+
+    async def delete_template(self, guild_id: str, template_id: str) -> GuildTemplate:
+        deleted = await self._run_db(self._guild_templates.delete, template_id, guild_id)
+        if deleted is None:
+            raise DeleteFailedError("テンプレート削除に失敗しました。")
+        return deleted
 
     async def get_last_used_template(self, user_id: str, guild_id: str) -> LastUsedTemplate:
         return await self._run_db(self._last_used.get, user_id, guild_id)
@@ -106,3 +126,13 @@ class AmidakujiService:
     def shutdown(self) -> None:
         if isinstance(self._db_executor, ThreadPoolExecutor):
             self._db_executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _validate_template_payload(title: str, options: list[str]) -> tuple[str, list[str]]:
+    normalized_title = title.strip()
+    normalized_options = sanitize_options(options)
+    if not normalized_title:
+        raise SaveFailedError("テンプレート名は必須です。")
+    if not normalized_options:
+        raise SaveFailedError("選択肢は1件以上必要です。")
+    return normalized_title, normalized_options

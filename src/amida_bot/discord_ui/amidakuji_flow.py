@@ -9,10 +9,12 @@ from amida_bot.application.amidakuji_service import AmidakujiService, TemplateSe
 from amida_bot.domain.models import Assignment, GuildTemplate, Participant, TemplateSnapshot
 from amida_bot.errors import (
     AmidaError,
+    DeleteFailedError,
     DrawFailedError,
     DuplicateTemplateTitleError,
     LastUsedNotFoundError,
     SaveFailedError,
+    TemplateNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -273,20 +275,17 @@ class ExistingTemplateView(OwnerOnlyView):
                 ephemeral=True,
             )
             return
-        template_selection = TemplateSelection(
-            source_template_id=selected.template_id,
-            snapshot=TemplateSnapshot(title=selected.title, options=selected.options),
-        )
-        next_view = ParticipantSelectionView(
+        next_view = TemplateActionView(
             service=self.service,
             owner_id=self.owner_id,
-            selected_template=template_selection,
+            guild_id=self.guild_id,
+            page_index=self.page_index,
+            page_size=self.page_size,
+            template=selected,
+            can_manage=_can_manage_template(interaction, selected),
         )
         await interaction.response.edit_message(
-            embed=build_system_embed(
-                f"テンプレート: {selected.title}",
-                "参加者を選択してください。",
-            ),
+            embed=next_view.build_embed(),
             view=next_view,
         )
 
@@ -322,6 +321,31 @@ class NewTemplateTitleModal(discord.ui.Modal, title="新規テンプレート作
         builder_view.message = message
 
 
+class EditTemplateTitleModal(discord.ui.Modal, title="テンプレート名を編集"):
+    template_title = discord.ui.TextInput(
+        label="テンプレート名",
+        placeholder="例: 週次ミーティング担当",
+        max_length=100,
+    )
+
+    def __init__(self, builder: "TemplateBuilderView") -> None:
+        super().__init__()
+        self.builder = builder
+        self.template_title.default = builder.title
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        title = str(self.template_title).strip()
+        if not title:
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレート名は必須です。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        self.builder.title = title
+        await interaction.response.defer(ephemeral=True)
+        await self.builder.refresh_message()
+
+
 class AddOptionModal(discord.ui.Modal, title="選択肢を追加"):
     option_name = discord.ui.TextInput(
         label="選択肢",
@@ -346,29 +370,314 @@ class AddOptionModal(discord.ui.Modal, title="選択肢を追加"):
         await self.builder.refresh_message()
 
 
+class BulkEditOptionsModal(discord.ui.Modal, title="選択肢を一括編集"):
+    options_input = discord.ui.TextInput(
+        label="選択肢（1行に1件）",
+        placeholder="司会\n議事録\nタイムキーパー",
+        max_length=2000,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, builder: "TemplateBuilderView") -> None:
+        super().__init__()
+        self.builder = builder
+        self.options_input.default = "\n".join(builder.options)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        options = [line.strip() for line in str(self.options_input).splitlines() if line.strip()]
+        if not options:
+            await interaction.response.send_message(
+                embed=build_system_embed("選択肢を1件以上入力してください。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        self.builder.options = options
+        await interaction.response.defer(ephemeral=True)
+        await self.builder.refresh_message()
+
+
+class TemplateActionView(OwnerOnlyView):
+    def __init__(
+        self,
+        service: AmidakujiService,
+        owner_id: int,
+        guild_id: str,
+        page_index: int,
+        page_size: int,
+        template: GuildTemplate,
+        can_manage: bool,
+    ) -> None:
+        super().__init__(owner_id=owner_id)
+        self.service = service
+        self.guild_id = guild_id
+        self.page_index = page_index
+        self.page_size = page_size
+        self.template = template
+        self.can_manage = can_manage
+        if not can_manage:
+            self.remove_item(self.edit_template)
+            self.remove_item(self.delete_template)
+
+    def build_embed(self) -> discord.Embed:
+        lines = [
+            f"選択肢: {len(self.template.options)}件",
+            "",
+            "次の操作を選択してください。",
+        ]
+        preview = _build_options_preview(self.template.options)
+        if preview:
+            lines.append("")
+            lines.append(preview)
+        if not self.can_manage:
+            lines.extend(
+                [
+                    "",
+                    "このテンプレートは抽選のみ利用できます。",
+                ]
+            )
+        return build_system_embed(f"テンプレート: {self.template.title}", "\n".join(lines))
+
+    @discord.ui.button(label="抽選へ進む", style=discord.ButtonStyle.success)
+    async def start_draw(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        template_selection = TemplateSelection(
+            source_template_id=self.template.template_id,
+            snapshot=TemplateSnapshot(title=self.template.title, options=self.template.options),
+        )
+        next_view = ParticipantSelectionView(
+            service=self.service,
+            owner_id=self.owner_id,
+            selected_template=template_selection,
+        )
+        await interaction.response.edit_message(
+            embed=build_system_embed(
+                f"テンプレート: {self.template.title}",
+                "参加者を選択してください。",
+            ),
+            view=next_view,
+        )
+
+    @discord.ui.button(label="編集する", style=discord.ButtonStyle.primary)
+    async def edit_template(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        if not self.can_manage:
+            await interaction.response.send_message(
+                embed=build_system_embed("このテンプレートを編集する権限がありません。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        try:
+            latest = await self.service.get_template(self.guild_id, self.template.template_id)
+        except TemplateNotFoundError:
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレートが存在しません。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        except Exception as error:  # noqa: BLE001
+            logger.exception("template fetch failed: %s", error)
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレート取得に失敗しました。", is_error=True),
+                ephemeral=True,
+            )
+            return
+
+        builder_view = TemplateBuilderView(
+            service=self.service,
+            owner_id=self.owner_id,
+            title=latest.title,
+            options=latest.options,
+            template_id=latest.template_id,
+        )
+        await interaction.response.send_message(
+            embed=builder_view.render_embed(),
+            view=builder_view,
+            ephemeral=True,
+        )
+        builder_view.message = await interaction.original_response()
+
+    @discord.ui.button(label="削除する", style=discord.ButtonStyle.danger)
+    async def delete_template(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        if not self.can_manage:
+            await interaction.response.send_message(
+                embed=build_system_embed("このテンプレートを削除する権限がありません。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        confirm_view = TemplateDeleteConfirmView(
+            service=self.service,
+            owner_id=self.owner_id,
+            guild_id=self.guild_id,
+            page_index=self.page_index,
+            page_size=self.page_size,
+            template=self.template,
+        )
+        await interaction.response.edit_message(embed=confirm_view.build_embed(), view=confirm_view)
+
+    @discord.ui.button(label="一覧へ戻る", style=discord.ButtonStyle.secondary)
+    async def back_to_list(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        try:
+            embed, view = await _build_existing_template_listing(
+                service=self.service,
+                owner_id=self.owner_id,
+                guild_id=self.guild_id,
+                page_index=self.page_index,
+                page_size=self.page_size,
+            )
+        except Exception as error:  # noqa: BLE001
+            logger.exception("template list restore failed: %s", error)
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレート一覧取得に失敗しました。", is_error=True),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class TemplateDeleteConfirmView(OwnerOnlyView):
+    def __init__(
+        self,
+        service: AmidakujiService,
+        owner_id: int,
+        guild_id: str,
+        page_index: int,
+        page_size: int,
+        template: GuildTemplate,
+    ) -> None:
+        super().__init__(owner_id=owner_id)
+        self.service = service
+        self.guild_id = guild_id
+        self.page_index = page_index
+        self.page_size = page_size
+        self.template = template
+
+    def build_embed(self) -> discord.Embed:
+        description = "\n".join(
+            [
+                "この操作は取り消せません。",
+                "削除後も last used に保存されたスナップショットからの抽選は継続できます。",
+            ]
+        )
+        return build_system_embed(f"テンプレート {self.template.title} を削除しますか？", description, is_error=True)
+
+    @discord.ui.button(label="削除を確定", style=discord.ButtonStyle.danger)
+    async def confirm_delete(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        try:
+            deleted = await self.service.delete_template(self.guild_id, self.template.template_id)
+            embed, view = await _build_existing_template_listing(
+                service=self.service,
+                owner_id=self.owner_id,
+                guild_id=self.guild_id,
+                page_index=self.page_index,
+                page_size=self.page_size,
+            )
+        except TemplateNotFoundError:
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレートが存在しません。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        except DeleteFailedError as error:
+            logger.exception("template delete failed: %s", error)
+            await interaction.response.send_message(
+                embed=build_system_embed(str(error), is_error=True),
+                ephemeral=True,
+            )
+            return
+        except Exception as error:  # noqa: BLE001
+            logger.exception("template delete failed: %s", error)
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレート削除に失敗しました。", is_error=True),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            embed=build_system_embed(
+                f"テンプレート {deleted.title} を削除しました。",
+                embed.description,
+            ),
+            view=view,
+        )
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel_delete(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        action_view = TemplateActionView(
+            service=self.service,
+            owner_id=self.owner_id,
+            guild_id=self.guild_id,
+            page_index=self.page_index,
+            page_size=self.page_size,
+            template=self.template,
+            can_manage=True,
+        )
+        await interaction.response.edit_message(embed=action_view.build_embed(), view=action_view)
+
+
 class TemplateBuilderView(OwnerOnlyView):
-    def __init__(self, service: AmidakujiService, owner_id: int, title: str) -> None:
+    def __init__(
+        self,
+        service: AmidakujiService,
+        owner_id: int,
+        title: str,
+        *,
+        options: list[str] | None = None,
+        template_id: str | None = None,
+    ) -> None:
         super().__init__(owner_id=owner_id)
         self.service = service
         self.title = title
-        self.options: list[str] = []
+        self.options = options[:] if options else []
+        self.template_id = template_id
         self.message: discord.InteractionMessage | None = None
+        self.save_template.label = "更新して抽選へ進む" if self.template_id else "保存して抽選へ進む"
 
     def render_embed(self) -> discord.Embed:
-        lines = ["選択肢を1件ずつ追加してください。"]
-        if self.options:
-            lines.append("")
-            lines.append("現在の選択肢:")
-            lines.extend([f"- {opt}" for opt in self.options])
-        else:
-            lines.append("")
-            lines.append("現在の選択肢: なし")
+        mode_text = "テンプレートを編集しています。" if self.template_id else "テンプレートを作成しています。"
+        lines = [
+            mode_text,
+            "「選択肢を追加」で1件ずつ追加するか、「選択肢を一括編集」でまとめて更新してください。",
+            "",
+        ]
+        preview = _build_options_preview(self.options)
+        lines.append(preview if preview else "現在の選択肢: なし")
         return build_system_embed(f"テンプレート名: {self.title}", "\n".join(lines))
 
     async def refresh_message(self) -> None:
         if self.message is None:
             return
         await self.message.edit(embed=self.render_embed(), view=self)
+
+    @discord.ui.button(label="タイトルを編集", style=discord.ButtonStyle.secondary)
+    async def edit_title(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        await interaction.response.send_modal(EditTemplateTitleModal(self))
 
     @discord.ui.button(label="選択肢を追加", style=discord.ButtonStyle.primary)
     async def add_option(
@@ -377,6 +686,14 @@ class TemplateBuilderView(OwnerOnlyView):
         button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
     ) -> None:
         await interaction.response.send_modal(AddOptionModal(self))
+
+    @discord.ui.button(label="選択肢を一括編集", style=discord.ButtonStyle.secondary)
+    async def edit_options(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[discord.ui.View],  # noqa: ARG002
+    ) -> None:
+        await interaction.response.send_modal(BulkEditOptionsModal(self))
 
     @discord.ui.button(label="保存して抽選へ進む", style=discord.ButtonStyle.success)
     async def save_template(
@@ -391,15 +708,29 @@ class TemplateBuilderView(OwnerOnlyView):
             )
             return
         try:
-            created = await self.service.create_template(
-                guild_id=str(interaction.guild_id),
-                user_id=str(interaction.user.id),
-                title=self.title,
-                options=self.options,
-            )
+            if self.template_id is None:
+                saved = await self.service.create_template(
+                    guild_id=str(interaction.guild_id),
+                    user_id=str(interaction.user.id),
+                    title=self.title,
+                    options=self.options,
+                )
+            else:
+                saved = await self.service.update_template(
+                    guild_id=str(interaction.guild_id),
+                    template_id=self.template_id,
+                    title=self.title,
+                    options=self.options,
+                )
         except DuplicateTemplateTitleError:
             await interaction.response.send_message(
                 embed=build_system_embed("同名テンプレートが既に存在します。", is_error=True),
+                ephemeral=True,
+            )
+            return
+        except TemplateNotFoundError:
+            await interaction.response.send_message(
+                embed=build_system_embed("テンプレートが存在しません。", is_error=True),
                 ephemeral=True,
             )
             return
@@ -419,17 +750,18 @@ class TemplateBuilderView(OwnerOnlyView):
             return
 
         selected_template = TemplateSelection(
-            source_template_id=created.template_id,
-            snapshot=TemplateSnapshot(title=created.title, options=created.options),
+            source_template_id=saved.template_id,
+            snapshot=TemplateSnapshot(title=saved.title, options=saved.options),
         )
         next_view = ParticipantSelectionView(
             service=self.service,
             owner_id=self.owner_id,
             selected_template=selected_template,
         )
+        message = f"テンプレート {saved.title} を更新しました。" if self.template_id else f"テンプレート {saved.title} を保存しました。"
         await interaction.response.edit_message(
             embed=build_system_embed(
-                f"テンプレート {created.title} を保存しました。",
+                message,
                 "参加者を選択してください。",
             ),
             view=next_view,
@@ -557,6 +889,75 @@ def build_assignment_embeds(assignments: list[Assignment]) -> list[discord.Embed
         )
     )
     return visible
+
+
+def _build_options_preview(options: list[str]) -> str:
+    if not options:
+        return ""
+    lines = ["現在の選択肢:"]
+    visible_options = options[:10]
+    lines.extend([f"{index}. {option}" for index, option in enumerate(visible_options, start=1)])
+    if len(options) > len(visible_options):
+        lines.append(f"...他 {len(options) - len(visible_options)} 件")
+    preview = "\n".join(lines)
+    if len(preview) > 1500:
+        return f"{preview[:1500]}\n..."
+    return preview
+
+
+def _can_manage_template(interaction: discord.Interaction, template: GuildTemplate) -> bool:
+    if str(interaction.user.id) == template.created_by:
+        return True
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    return bool(permissions and getattr(permissions, "manage_guild", False))
+
+
+async def _build_existing_template_listing(
+    service: AmidakujiService,
+    owner_id: int,
+    guild_id: str,
+    page_index: int,
+    page_size: int,
+) -> tuple[discord.Embed, discord.ui.View]:
+    current_page_index = page_index
+    while current_page_index > 0:
+        page = await service.list_guild_templates(
+            guild_id,
+            limit=page_size,
+            offset=current_page_index * page_size,
+        )
+        if page.templates:
+            view = ExistingTemplateView(
+                service=service,
+                owner_id=owner_id,
+                guild_id=guild_id,
+                page_index=current_page_index,
+                page_size=page_size,
+                templates=page.templates,
+                has_next=page.has_next,
+            )
+            return view.build_page_embed(), view
+        current_page_index -= 1
+
+    first_page = await service.list_guild_templates(
+        guild_id,
+        limit=page_size,
+        offset=0,
+    )
+    if not first_page.templates:
+        start_view = StartView(service=service, owner_id=owner_id)
+        return build_system_embed("利用可能なテンプレートがありません。", is_error=True), start_view
+
+    view = ExistingTemplateView(
+        service=service,
+        owner_id=owner_id,
+        guild_id=guild_id,
+        page_index=0,
+        page_size=page_size,
+        templates=first_page.templates,
+        has_next=first_page.has_next,
+    )
+    return view.build_page_embed(), view
 
 
 def register_amidakuji_command(tree: app_commands.CommandTree, service: AmidakujiService) -> None:

@@ -3,7 +3,7 @@ title: Amidakuji MVP Reference
 status: active
 draft_status: n/a
 created_at: 2026-04-10
-updated_at: 2026-04-10
+updated_at: 2026-04-21
 references:
   - ../../guide/Core/amidakuji-mvp.md
 related_issues: []
@@ -16,6 +16,7 @@ related_prs: []
 
 - `/amidakuji`
 - 実装: `src/amida_bot/discord_ui/amidakuji_flow.py`
+- 既存テンプレート選択後に、抽選・編集・削除の管理アクションへ分岐する
 
 ## レイヤ構成
 
@@ -29,13 +30,20 @@ related_prs: []
 ### GuildTemplateRepository
 
 - `list_by_guild(guild_id)`
+- `get_by_id(guild_id, template_id)`
 - `get_by_title(guild_id, title)`
 - `create(guild_id, title, options, created_by)`
+- `update(template_id, guild_id, title, options)`
+- `delete(template_id, guild_id)`
 
 ### LastUsedTemplateRepository
 
 - `get(user_id, guild_id)`
 - `upsert(user_id, guild_id, source_template_id, snapshot)`
+
+## 権限制御
+
+- テンプレートの編集・削除は、`created_by` と操作ユーザーIDの一致、または Discord の `Manage Guild` 権限で判定する。
 
 ## データベース
 

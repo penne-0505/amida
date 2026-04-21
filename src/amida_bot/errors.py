@@ -18,5 +18,9 @@ class SaveFailedError(AmidaError):
     """Raised when create or upsert operations fail."""
 
 
+class DeleteFailedError(AmidaError):
+    """Raised when delete operation fails."""
+
+
 class DrawFailedError(AmidaError):
     """Raised when draw operation cannot continue."""

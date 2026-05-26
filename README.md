@@ -9,7 +9,7 @@ MVP では `/amidakuji` から以下の体験を提供します。
 - テンプレートを新規作成する（選択肢を一件ずつ追加）
 - 最後に使ったテンプレートを使う（user x guild 単位）
 
-## 技術スタック
+## スタック
 
 - Python 3.12
 - `discord.py`
@@ -59,7 +59,7 @@ uv run amida-bot
 ```
 
 Bot 起動中は `GET /healthz` が利用できます。Discord Gateway に接続して `on_ready` 済みであれば `200 OK`、起動中・切断中・終了中は `503 Service Unavailable` を返します。  
-ヘルスチェックは本文よりステータスコードを優先する前提で、`Cache-Control: no-store` を返します。
+ヘルスチェックは本文よりステータスコードを優先する前提で、`Cache-Control: no-store` を返します。 (自分用なので汎用ではないと思います)
 
 ## テスト
 

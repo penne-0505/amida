@@ -15,7 +15,7 @@
 ### Phase 1: Backlog (Structured)
 - **Location**: `# Backlog` セクション
 - **Status**: タスクとして認識済みだが、着手準備未完了。
-- **Entry Criteria**: 
+- **Entry Criteria**:
   - IDが一意に採番されている。
   - 必須フィールド（Title, ID, Priority, Size, Area, Description）が埋まっている。
 - **Exit Condition**: `Ready` の要件を満たす。
@@ -180,15 +180,14 @@ ID生成およびタイトルのプレフィックスには以下のみを使用
 - **Plan**: None
 ```
 
---- 
+---
 
 ## Inbox
-- 
+-
 
 ---
 
 ## Backlog
-
 
 - **Title**: [Chore] Review and customize AGENTS.md
 - **ID**: Docs-Chore-1

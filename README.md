@@ -24,7 +24,7 @@ MVP では `/amidakuji` から以下の体験を提供します。
 uv sync
 ```
 
-2. 環境変数設定
+1. 環境変数設定
 
 `.env.example` を `.env` にコピーし、値を設定してください。
 
@@ -48,7 +48,7 @@ HEALTHCHECK_PATH=/healthz
 `HEALTHCHECK_ENABLED=true` の場合は、`HEALTHCHECK_HOST:HEALTHCHECK_PORT` に HTTP ヘルスチェックエンドポイントを公開します。
 `HEALTHCHECK_PATH` の既定値は `/healthz` です。
 
-3. Supabase マイグレーション適用
+1. Supabase マイグレーション適用
 
 `supabase/migrations/20260410_000001_amida_mvp.sql` を Supabase 側で適用してください。
 
@@ -66,3 +66,17 @@ Bot 起動中は `GET /healthz` が利用できます。Discord Gateway に接�
 ```bash
 uv run pytest
 ```
+
+## 開発時の検証
+
+```bash
+./scripts/check-docs.sh
+npx --yes markdownlint-cli2 "**/*.md" "!.venv/**" "!dist/**"
+uv run pytest
+uv build
+```
+
+ドキュメント規約は `_docs/documentation_guide.md`、QA 契約は
+`_docs/standards/quality_assurance.md` を参照してください。template 更新の
+provenance は `docs-template.lock.json` に固定します。既存の legacy docs は
+意味を変更する編集時に個別移行し、bulk schema conversion は行いません。
